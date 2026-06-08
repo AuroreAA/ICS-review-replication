@@ -33,8 +33,7 @@ clusters[outliers] <- "outlier"
 # ICS COV-COV4 ---------------------------------------------------------------------
 ics_res <- ICS(HTP)
 
-plot_ics_eigenvalues <- select_plot(ics_res, select = c(1:5, 83:88),
-                                    type = "lines")
+plot_ics_eigenvalues <- select_plot(ics_res, select = c(1:5, 83:88))
 plot_ics_eigenvalues <- plot_ics_eigenvalues + 
   geom_vline(aes(xintercept = 5.5), linetype = "dashed") +
   ylim(0,6.5)+
