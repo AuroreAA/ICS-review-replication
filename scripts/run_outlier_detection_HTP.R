@@ -1,15 +1,16 @@
 # *********************************************
-# Authors: Aurore Archimbaud 
+# Authors: Aurore Archimbaud
 #          TBS Business School
+# 20/10/2026
 # *********************************************
-
+# Reproduce Figure 5
 
 # Libraries --------------------------------------------------------------
 
 # For ICS
 library(ICSOutlier)
 library(ICSClust)
-library(ICSOutlier)
+
 
 # For PCA
 library(rrcov)
@@ -17,222 +18,117 @@ library(rrcov)
 # For plotting
 library(ggplot2)
 library(ggrepel)
-
-# For pre processing
-library(magrittr)
+library(patchwork)
 
 
 # Data  --------------------------------------------------------------------
 # HTP data: the observations 581 and 619 are considered as outliers
 data(HTP)
 outliers <- c(581, 619)
-boxplot(HTP)
-clusters <- rep("normal", nrow(HTP))
-clusters[outliers] <- "outlier"
+n <- nrow(HTP)
+type <- factor(ifelse(seq_len(n) %in% outliers, "outlier", "normal"),
+               levels = c("normal", "outlier"))
 
-# ICS COV-COV4 ---------------------------------------------------------------------
-ics_res <- ICS(HTP)
+colors <- c(normal = "grey50", outlier = "black")
 
-plot_ics_eigenvalues <- select_plot(ics_res, select = c(1:5, 83:88))
-plot_ics_eigenvalues <- plot_ics_eigenvalues + 
-  geom_vline(aes(xintercept = 5.5), linetype = "dashed") +
-  ylim(0,6.5)+
-  theme_minimal() +
-  labs(x = "ICS-Components", fill = "") +
-  theme(plot.title = element_text(hjust = 0.5),
-        text = element_text(size = 20),
-        legend.position="top") 
-
-pdf("figures/HTP_outliers_ics_eigenvalues.pdf",  width = 6.5, height = 5.75)
-print(plot_ics_eigenvalues)
-dev.off()
+# Common theme for all panels
+theme_paper <- theme_minimal(base_size = 16) +
+  theme(strip.text = element_text(size = 15))
 
 
-# screeplot: only one component to keep
-df_scores <- data.frame(ID = 1:nrow(ics_res$scores),
-                        Type = clusters,
-                        Z = ics_res$scores[,1]^2)
+# Methods ------------------------------------------------------------------
+
+# ICS COV-COV4
+ics_cov_cov4 <- ICS(HTP)
+
+# ICS reversed: COV4-COV (only the last component is kept)
+ics_cov4_cov <- ICS(HTP, S1 = ICS_cov4, S2 = ICS_cov)
+
+# Robust scatter: reweighted MCD with alpha = 0.75
+MCD <- ICS_mcd_rwt(HTP, location = TRUE, alpha = 0.75)
+
+# ROBPCA
+ROBPCA <- PcaHubert(HTP)
 
 
-# Create the y-axis label based on the combination of scatter matrices and
-# the number of selected components
+# Panels -------------------------------------------------------------------
+# Each panel carries its header as a facet strip (parsed, so that indices
+# like COV[4] or ICSD[k==1]^2 are rendered as math).
 
-k_details <- 1
-y_axis <- bquote("COV-COV"[4] : ICSD[ ~ 'k' == .(k_details) ] ^2 )
+# Panel 1: ICS screeplot (COV-COV4), first 5 and last 6 components
+sel <- c(1:5, 83:88)
+df_eig <- data.frame(
+  component = factor(paste0("IC.", sel), levels = paste0("IC.", sel)),
+  value     = ics_cov_cov4$gen_kurtosis[sel],
+  panel     = '"ICS (COV-COV"[4]*"): screeplot"'
+)
 
-colors <-  c("grey50", "black")
-plot_ics <- df_scores  %>%
-  ggplot(aes(x = ID, y =  Z)) +
-  geom_point(data = df_scores[df_scores$Type != "outlier",],
-             aes(color = Type, shape = Type), alpha = 0.7, size = 2.5) +
-  geom_point(data = df_scores[df_scores$Type == "outlier",],
-             aes(color = Type, shape = Type), alpha = 1, size = 3) +
+plot_eig <- ggplot(df_eig, aes(x = component, y = value)) +
+  geom_point(size = 2.5) +
+  geom_vline(xintercept = 5.5, linetype = "dashed") +
+  scale_y_continuous(limits = c(0, 6.5)) +
+  facet_wrap(~ panel, labeller = label_parsed) +
+  labs(x = "ICS Components", y = "Generalized kurtosis") +
+  theme_paper +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Panels 2-5: index plots of squared distances
+# (mahalanobis() returns the squared distance, like ICSD^2)
+make_index_plot <- function(z, header, ylab = "Squared distance") {
+  df <- data.frame(ID = seq_len(n), Type = type, Z = z, panel = header)
+  ggplot(df, aes(x = ID, y = Z, color = Type, shape = Type)) +
+    geom_point(data = subset(df, Type == "normal"), alpha = 0.7, size = 2.5) +
+    geom_point(data = subset(df, Type == "outlier"), size = 3) +
+    geom_text_repel(data = subset(df, Type == "outlier"),
+                    aes(label = ID), point.size = 2, size = 5,
+                    max.overlaps = Inf, show.legend = FALSE) +
+    facet_wrap(~ panel, labeller = label_parsed) +
+    scale_color_manual(values = colors) +
+    labs(x = "Observation number", y = ylab,
+         color = NULL, shape = NULL) +
+    theme_paper
+}
+
+plot_ics <- make_index_plot(ics_cov_cov4$scores[, 1]^2,
+                            header = '"ICS (COV-COV"[4]*")"',
+                            ylab   = expression(ICSD[k == 1]^2))
+
+plot_ics_rev <- make_index_plot(ics_cov4_cov$scores[, 88]^2,
+                                header = '"ICS (COV"[4]*"-COV)"',
+                                ylab   = expression(ICSD[k == 88]^2))
+
+plot_MD <- make_index_plot(mahalanobis(HTP, colMeans(HTP), cov(HTP)),
+                           '"Mahalanobis distance"')
+
+plot_RMD <- make_index_plot(mahalanobis(HTP, MCD$location, MCD$scatter),
+                            '"Robust Mahalanobis distance (MCD"[0.75]*")"')
+
+# Panel 6: ROBPCA diagnostic plot
+df_PCA <- data.frame(ID = seq_len(n), Type = type,
+                     SD = ROBPCA@sd, OD = ROBPCA@od,
+                     panel = '"ROBPCA"')
+
+plot_PCA <- ggplot(df_PCA, aes(x = SD, y = OD, color = Type, shape = Type)) +
+  geom_point(data = subset(df_PCA, Type == "normal"), alpha = 0.7, size = 2.5) +
+  geom_point(data = subset(df_PCA, Type == "outlier"), size = 3) +
+  geom_vline(xintercept = ROBPCA@cutoff.sd, linetype = "dashed") +
+  geom_hline(yintercept = ROBPCA@cutoff.od, linetype = "dashed") +
+  geom_text_repel(data = subset(df_PCA, Type == "outlier"),
+                  aes(label = ID), point.size = 2, size = 5,
+                  max.overlaps = Inf, show.legend = FALSE) +
+  facet_wrap(~ panel, labeller = label_parsed) +
   scale_color_manual(values = colors) +
-  ylim(0,700)+
-  theme_minimal() +
-  labs(x = "Observation Number", y = y_axis, fill = "") +
-  theme(plot.title = element_text(hjust = 0.5),
-        text = element_text(size = 20),
-        legend.position="top") +
-  ggrepel::geom_text_repel(data = df_scores[df_scores$Type == "outlier",], 
-                           aes(label = ID), point.size = 2, size = 5, 
-                           max.overlaps = Inf) 
-plot_ics
+  labs(x = "Score distance", y = "Orthogonal distance",
+       color = NULL, shape = NULL) +
+  theme_paper
 
 
-# save plot to pdf
+# One figure: 3 rows x 2 columns, single shared legend ----------------------
+fig_HTP <- plot_eig + plot_ics +
+  plot_ics_rev + plot_MD +
+  plot_RMD + plot_PCA +
+  plot_layout(ncol = 2, guides = "collect") &
+  theme(legend.position = "top")
+#fig_HTP
 
-pdf("figures/HTP_outliers_ics.pdf", width = 6.5, height = 5.75)
-print(plot_ics)
-dev.off()
-
-
-
-# ICS reversed: COV4-COV ---------------------------------------------------------------------
-# Run ICS with reversing order or the scatters: 
-ics_res <- ICS(HTP, S1 = ICS_cov4, S2 = ICS_cov)
-
-# screeplot: only one component to keep (the last one)
-select_plot(ics_res)
-
-df_scores <- data.frame(ID = 1:nrow(ics_res$scores),
-                        Type = clusters,
-                        Z = ics_res$scores[,88]^2)
-
-
-# Create the y-axis label based on the combination of scatter matrices and
-# the number of selected components
-
-k_details <- 88
-y_axis <- bquote(COV[4]*"- COV : ICSD"[ ~ 'k' == .(k_details) ] ^2 )
-
-
-plot_ics <- df_scores  %>%
-  ggplot(aes(x = ID, y =  Z)) +
-  geom_point(data = df_scores[df_scores$Type != "outlier",],
-             aes(color = Type, shape = Type), alpha = 0.7, size = 2.5) +
-  geom_point(data = df_scores[df_scores$Type == "outlier",],
-             aes(color = Type, shape = Type), alpha = 1, size = 3) +
-  scale_color_manual(values = colors) +
-  ylim(0,700)+
-  theme_minimal() +
-  labs(x = "Observation Number", y = y_axis, fill = "") +
-  theme(plot.title = element_text(hjust = 0.5),
-        text = element_text(size = 20),
-        legend.position="top") +
-  ggrepel::geom_text_repel(data = df_scores[df_scores$Type == "outlier",], 
-                           aes(label = ID), point.size = 2, size = 5,
-                           max.overlaps = Inf) 
-plot_ics
-
-
-# save plot to pdf
-
-pdf("figures/HTP_outliers_ics_rev.pdf", width = 6.5, height = 5.75)
-print(plot_ics)
-dev.off()
-
-
-
-
-
-# Mahalanobs Distance ----------------------------------------------------------------------
-df_MD <- data.frame(ID = 1:nrow(ics_res$scores),
-                        Type = clusters,
-                        Z = mahalanobis(HTP, colMeans(HTP), cov(HTP)))
-
-plot_MD <- df_MD  %>%
-  ggplot(aes(x = ID, y =  Z)) +
-  geom_point(data =  df_MD[df_scores$Type != "outlier",],
-             aes(color = Type, shape = Type), alpha = 0.7, size = 2.5) +
-  geom_point(data =  df_MD[df_scores$Type == "outlier",],
-             aes(color = Type, shape = Type), alpha = 1, size = 3) +
-  scale_color_manual(values = colors) +
-  theme_minimal() +
-  labs(x = "Observation Number", y = "Mahalanobis distance", fill = "") +
-  theme(plot.title = element_text(hjust = 0.5),
-        text = element_text(size = 20),
-        legend.position="top") +
-  ggrepel::geom_text_repel(data = df_MD[df_MD$Type == "outlier",], 
-                           aes(label = ID), point.size = 2, size = 5,
-                           max.overlaps = Inf) 
-plot_MD
-
-
-# save plot to pdf
-
-pdf("figures/HTP_outliers_MD.pdf", width = 6.5, height = 5.75)
-print(plot_MD)
-dev.off()
-
-
-
-
-# Robust Mahalanobis distance with MCD 0.75 ----------------------------------------------------------------------
-MCD  <- ICS_mcd_rwt(HTP, location = TRUE, alpha = 0.75)
-df_RMD <- data.frame(ID = 1:nrow(ics_res$scores),
-                     Type = clusters,
-                     Z = mahalanobis(HTP, MCD$location, MCD$scatter))
-
-plot_RMD <- df_RMD  %>%
-  ggplot(aes(x = ID, y =  Z)) +
-  geom_point(data =  df_RMD[df_scores$Type != "outlier",],
-             aes(color = Type, shape = Type), alpha = 0.7, size = 2.5) +
-  geom_point(data =  df_RMD[df_scores$Type == "outlier",],
-             aes(color = Type, shape = Type), alpha = 1, size = 3) +
-  scale_color_manual(values = colors) +
-  theme_minimal() +
-  labs(x = "Observation Number", y = "Robust Mahalanobis distance", fill = "") +
-  theme(plot.title = element_text(hjust = 0.5),
-        text = element_text(size = 20),
-        legend.position="top") +
-  ggrepel::geom_text_repel(data = df_RMD[df_RMD$Type == "outlier",], 
-                           aes(label = ID), point.size = 2, size = 5,
-                           max.overlaps = Inf) 
-plot_RMD
-
-
-# save plot to pdf
-
-pdf("figures/HTP_outliers_RMD75.pdf", width = 6.5, height = 5.75)
-print(plot_RMD)
-dev.off()
-
-
-
-
-# ROBPCA ---------------------------------------------------------------------
-ROBPCA  <- PcaHubert(HTP)
-plot(ROBPCA)
-df_PCA <- data.frame(ID = 1:nrow(ics_res$scores),
-                     Type = clusters,
-                     SD = ROBPCA@sd,
-                     OD = ROBPCA@od)
-
-
-plot_PCA <- df_PCA  %>%
-  ggplot(aes(x = SD, y =  OD)) +
-  geom_point(data =   df_PCA[df_scores$Type != "outlier",],
-             aes(color = Type, shape = Type), alpha = 0.7, size = 2.5) +
-  geom_point(data =   df_PCA[df_scores$Type == "outlier",],
-             aes(color = Type, shape = Type), alpha = 1, size = 3) +
-  geom_vline(aes(xintercept = ROBPCA@cutoff.sd)) +
-  geom_hline(aes(yintercept = ROBPCA@cutoff.od)) +
-  scale_color_manual(values = colors) +
-  theme_minimal() +
-  labs(x = "Score distance", y = "Orthogonal distance", fill = "") +
-  theme(plot.title = element_text(hjust = 0.5),
-        text = element_text(size = 20),
-        legend.position="top") +
-  ggrepel::geom_text_repel(data = df_PCA[df_PCA$Type == "outlier",], 
-                           aes(label = ID), point.size = 2, size = 5,
-                           max.overlaps = Inf) 
-plot_PCA
-
-
-# save plot to pdf
-
-pdf("figures/HTP_outliers_ROBPCA.pdf", width = 6.5, height = 5.75)
-print(plot_PCA)
-dev.off()
-
+ggsave("figures/HTP_outliers.pdf", plot = fig_HTP, width = 12, height = 14)
